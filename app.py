@@ -2,18 +2,18 @@ import streamlit as st
 import pandas as pd
 import requests
 
-st.set_page_config(page_title="ระบบข้อมูลเกษตรจาก API", layout="wide")
-st.title("ระบบข้อมูลเกษตรจาก API (Live Agri-Data)")
-st.caption("ดึงข้อมูลจริงแบบสดจากอินเทอร์เน็ต แล้วแสดงผลโต้ตอบได้")
+st.set_page_config(page_title="ระบบข้อมูลสวนลำไย จ.เชียงใหม่", layout="wide")
+st.title("ระบบข้อมูลสวนลำไย จ.เชียงใหม่ (Live Agri-Data)")
+st.caption("เวอร์ชันปรับตามพื้นที่: พิกัดเริ่มต้น = เชียงใหม่ · ราคา = ลำไย (พืชหลักของภาคเหนือ)")
 
-# ส่ง User-Agent แบบเบราว์เซอร์ ช่วยให้บาง API ไม่บล็อกว่าเป็นบอท
 HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
                           "Chrome/124.0 Safari/537.36"),
            "Accept": "application/json"}
 
-# หมายเหตุ: ชื่อคอลัมน์ห้ามมีจุด "." หรือวงเล็บ เพราะกราฟของ Streamlit (Vega-Lite)
-# จะตีความจุดเป็นตัวเข้าถึงฟิลด์ย่อย ทำให้วาดค่าไม่ออก — หน่วยจึงไปไว้ที่ caption/label แทน
+# พิกัดเริ่มต้น = ตัวเมืองเชียงใหม่ (เปลี่ยนเป็นพิกัดสวนของคุณได้)
+CM_LAT, CM_LON = 18.79, 98.98
+เกรดเรียง = ["AA", "A", "B", "C"]
 
 @st.cache_data(ttl=1800)
 def ดึงอากาศ(lat, lon, days):
@@ -37,41 +37,37 @@ def ดึงระดับน้ำ(lat, lon):
     r.columns = ["วันที่", "ปริมาณน้ำ"]
     return r
 
-# ราคาสำรอง (snapshot ธ.ค. 2567) ใช้แสดงเมื่อเซิร์ฟเวอร์เข้า data.go.th ไม่ได้
-ราคาสำรอง = pd.DataFrame({
-    "สินค้า": ["ทุเรียนหมอนทองคละ", "ยางแผ่นดิบชั้น 3", "เงาะโรงเรียนคละ",
-              "กล้วยหอมทองขนาดคละ", "สับปะรดโรงงาน", "มันสำปะหลังคละ"],
-    "ราคา": [135.0, 76.4, 40.2, 20.0, 12.5, 1.3],
-})
+# ราคาลำไยสำรอง (สดรูดร่วง ปี 2567) ใช้เมื่อเซิร์ฟเวอร์เข้า data.go.th ไม่ได้
+ลำไยสำรอง = pd.DataFrame({"เกรด": เกรดเรียง, "ราคา": [31.17, 17.83, 9.83, 3.17]})
 
 @st.cache_data(ttl=86400)
-def _ดึงราคาดิบ():
+def _ดึงลำไยดิบ():
     URL = "https://data.go.th/api/3/action/datastore_search"
-    RESOURCE_ID = "38b840af-f119-4bea-9208-66188da5cc1b"
-    resp = requests.get(URL, params={"resource_id": RESOURCE_ID, "limit": 5000},
+    RESOURCE_ID = "3dd78b27-a305-459a-8e93-27dc7b92a7b3"  # ราคาลำไย (แยกชนิด/เกรด รายปี)
+    resp = requests.get(URL, params={"resource_id": RESOURCE_ID, "limit": 100},
                         headers=HEADERS, timeout=30)
     resp.raise_for_status()
-    recs = resp.json()["result"]["records"]   # ถ้าตอบไม่ใช่ JSON จะ error แล้วไปใช้ค่าสำรอง
-    ราคา = pd.DataFrame(recs).rename(columns={"เกษตรสำคัญบึงกาฬ": "สินค้า", "ค่า": "ราคา"})
-    ราคา["ราคา"] = pd.to_numeric(ราคา["ราคา"], errors="coerce")
-    return ราคา
+    df = pd.DataFrame(resp.json()["result"]["records"])
+    df["ชนิด"] = df["ชนิด"].str.strip()
+    df["ราคา"] = pd.to_numeric(df["ราคา"], errors="coerce")
+    df["ปี"] = pd.to_numeric(df["ปี"], errors="coerce").astype("Int64")
+    return df
 
-def ดึงราคาเกษตร():
-    # st.cache_data ไม่เก็บผลตอน error ดังนั้นถ้าพลาดครั้งนี้ ครั้งหน้าจะลองใหม่เอง
+def ดึงราคาลำไย():
     try:
-        return _ดึงราคาดิบ(), True
+        return _ดึงลำไยดิบ(), True
     except Exception:
         return None, False
 
-แท็บอากาศ, แท็บน้ำ, แท็บราคา = st.tabs(
-    ["สภาพอากาศ", "ระดับน้ำแม่น้ำ", "ราคาสินค้าเกษตร"])
+แท็บอากาศ, แท็บน้ำ, แท็บราคา, แท็บราคาลำไย = st.tabs(
+    ["สภาพอากาศ", "ระดับน้ำแม่น้ำ", "ราคาลำไย", "ราคาลำไย (แยกเกรด)"])
 
-# ---------- แท็บ 1: สภาพอากาศ (Open-Meteo) ----------
+# ---------- แท็บ 1: สภาพอากาศ ----------
 with แท็บอากาศ:
-    st.subheader("พยากรณ์อากาศรายวันของสวน")
+    st.subheader("พยากรณ์อากาศรายวันของสวน (เชียงใหม่)")
     c1, c2, c3 = st.columns(3)
-    lat = c1.number_input("ละติจูด", value=18.90)
-    lon = c2.number_input("ลองจิจูด", value=99.01)
+    lat = c1.number_input("ละติจูด", value=CM_LAT)
+    lon = c2.number_input("ลองจิจูด", value=CM_LON)
     วัน = c3.slider("จำนวนวันล่วงหน้า", 3, 16, 15)
     try:
         w = ดึงอากาศ(lat, lon, วัน)
@@ -88,12 +84,12 @@ with แท็บอากาศ:
     except Exception as e:
         st.error(f"ดึงข้อมูลอากาศไม่สำเร็จ ลองใหม่อีกครั้ง (สาเหตุ: {e})")
 
-# ---------- แท็บ 2: ระดับน้ำแม่น้ำ (flood API) ----------
+# ---------- แท็บ 2: ระดับน้ำแม่น้ำ ----------
 with แท็บน้ำ:
-    st.subheader("ปริมาณการไหลของแม่น้ำ (เตือนภัยน้ำท่วม)")
+    st.subheader("ปริมาณการไหลของแม่น้ำปิง/ลำน้ำใกล้สวน (เตือนภัยน้ำท่วม)")
     c1, c2 = st.columns(2)
-    lat2 = c1.number_input("ละติจูด (จุดใกล้แม่น้ำ)", value=18.90, key="lat_river")
-    lon2 = c2.number_input("ลองจิจูด (จุดใกล้แม่น้ำ)", value=99.01, key="lon_river")
+    lat2 = c1.number_input("ละติจูด (จุดใกล้แม่น้ำ)", value=CM_LAT, key="lat_river")
+    lon2 = c2.number_input("ลองจิจูด (จุดใกล้แม่น้ำ)", value=CM_LON, key="lon_river")
     try:
         r = ดึงระดับน้ำ(lat2, lon2)
         st.write("ปริมาณการไหล (ลูกบาศก์เมตร/วินาที)")
@@ -104,37 +100,62 @@ with แท็บน้ำ:
     except Exception as e:
         st.error(f"ดึงระดับน้ำไม่สำเร็จ ลองใหม่อีกครั้ง (สาเหตุ: {e})")
 
-# ---------- แท็บ 3: ราคาสินค้าเกษตร (data.go.th) ----------
+# ---------- แท็บ 3: ราคาลำไย (แยกเกรด) ----------
 with แท็บราคา:
-    st.subheader("ราคาสินค้าเกษตรจริง (ข้อมูลเปิดภาครัฐ)")
-    ราคา, สด = ดึงราคาเกษตร()
+    st.subheader("ราคาลำไยจริง แยกตามเกรด (ข้อมูลเปิดภาครัฐ)")
+    df, สด = ดึงราคาลำไย()
     if not สด:
         st.warning("ตอนนี้เซิร์ฟเวอร์เข้า data.go.th ไม่ได้ "
-                   "(มักถูกบล็อกจาก IP ดาต้าเซ็นเตอร์) — แสดงราคาสำรองล่าสุด ธ.ค. 2567 แทน")
-        st.write("ราคาล่าสุด (บาท/กก.)")
-        st.bar_chart(ราคาสำรอง.set_index("สินค้า")["ราคา"])
-        st.dataframe(ราคาสำรอง, hide_index=True)
+                   "(มักถูกบล็อกจาก IP ดาต้าเซ็นเตอร์) — แสดงราคาสำรอง (สดรูดร่วง ปี 2567) แทน")
+        st.write("ราคาตามเกรด (บาท/กก.)")
+        st.bar_chart(ลำไยสำรอง.set_index("เกรด")["ราคา"])
+        st.dataframe(ลำไยสำรอง, hide_index=True)
     else:
-        ปีล่าสุด = int(ราคา["ปี"].max())
-        สินค้าทั้งหมด = sorted(ราคา["สินค้า"].dropna().unique())
-        ค่าเริ่ม = [s for s in ["ทุเรียนหมอนทองคละ", "เงาะโรงเรียนคละ", "ยางแผ่นดิบชั้น 3"]
-                   if s in สินค้าทั้งหมด]
-        เลือก = st.multiselect("เลือกสินค้าที่จะดู", สินค้าทั้งหมด, default=ค่าเริ่ม)
-        st.caption(f"ข้อมูลล่าสุดปี พ.ศ. {ปีล่าสุด} — สถิติทางการรายเดือน (จ.บึงกาฬ) หน่วย บาท/กก.")
-        เดือนเรียง = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
-                     "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
-        if เลือก:
-            ปีนี้ = ราคา[(ราคา["ปี"] == ปีล่าสุด) & (ราคา["สินค้า"].isin(เลือก))].copy()
-            ปีนี้["เดือน"] = pd.Categorical(ปีนี้["เดือน"], categories=เดือนเรียง, ordered=True)
-            ตาราง = ปีนี้.pivot_table(index="เดือน", columns="สินค้า",
-                                     values="ราคา", observed=False)
-            ตาราง = ตาราง.sort_index()
-            ตาราง.index = ตาราง.index.astype(str)   # เลี่ยง categorical index ที่กราฟไม่ยอมวาด
-            st.line_chart(ตาราง)
-            เดือนล่าสุด = ตาราง.dropna(how="all").index[-1]
-            st.write(f"ราคาเดือนล่าสุด ({เดือนล่าสุด} {ปีล่าสุด}) หน่วย บาท/กก.")
-            แถวล่าสุด = ตาราง.loc[[เดือนล่าสุด]].T
-            แถวล่าสุด.columns = ["ราคา"]
-            st.dataframe(แถวล่าสุด)
-        else:
-            st.warning("เลือกสินค้าอย่างน้อย 1 อย่าง")
+        ชนิด = st.radio("เลือกชนิดลำไย", sorted(df["ชนิด"].dropna().unique()), horizontal=True)
+        เฉพาะ = df[df["ชนิด"] == ชนิด]
+        ปีล่าสุด = int(เฉพาะ["ปี"].max())
+        st.caption("ข้อมูลจาก data.go.th (สำนักงานเศรษฐกิจการเกษตร) หน่วย บาท/กก.")
+
+        st.write(f"ราคาตามเกรด ปี {ปีล่าสุด}")
+        แท่ง = (เฉพาะ[เฉพาะ["ปี"] == ปีล่าสุด]
+                .set_index("เกรด")["ราคา"].reindex(เกรดเรียง))
+        st.bar_chart(แท่ง)
+
+        st.write("แนวโน้มราคาตามปี (แยกเกรด)")
+        เส้น = เฉพาะ.pivot_table(index="ปี", columns="เกรด",
+                                values="ราคา", observed=False)
+        เส้น = เส้น.reindex(columns=[g for g in เกรดเรียง if g in เส้น.columns])
+        เส้น.index = เส้น.index.astype(str)
+        st.line_chart(เส้น)
+
+        st.info("เกรดยิ่งดี (AA สูงสุด) ราคายิ่งสูง — เจ้าของสวนใช้วางแผนคัดเกรด/ช่วงเก็บเกี่ยวได้")
+
+# ---------- แท็บ 4: ราคาลำไย (แยกเกรด) ----------
+with แท็บราคาลำไย:
+    st.subheader("ราคาลำไยจริง แยกตามเกรด (ข้อมูลเปิดภาครัฐ)")
+    df, สด = ดึงราคาลำไย()
+    if not สด:
+        st.warning("ตอนนี้เซิร์ฟเวอร์เข้า data.go.th ไม่ได้ "
+                   "(มักถูกบล็อกจาก IP ดาต้าเซ็นเตอร์) — แสดงราคาสำรอง (สดรูดร่วง ปี 2567) แทน")
+        st.write("ราคาตามเกรด (บาท/กก.)")
+        st.bar_chart(ลำไยสำรอง.set_index("เกรด")["ราคา"])
+        st.dataframe(ลำไยสำรอง, hide_index=True)
+    else:
+        ชนิด = st.radio("เลือกชนิดลำไย", sorted(df["ชนิด"].dropna().unique()), horizontal=True)
+        เฉพาะ = df[df["ชนิด"] == ชนิด]
+        ปีล่าสุด = int(เฉพาะ["ปี"].max())
+        st.caption("ข้อมูลจาก data.go.th (สำนักงานเศรษฐกิจการเกษตร) หน่วย บาท/กก.")
+
+        st.write(f"ราคาตามเกรด ปี {ปีล่าสุด}")
+        แท่ง = (เฉพาะ[เฉพาะ["ปี"] == ปีล่าสุด]
+                .set_index("เกรด")["ราคา"].reindex(เกรดเรียง))
+        st.bar_chart(แท่ง)
+
+        st.write("แนวโน้มราคาตามปี (แยกเกรด)")
+        เส้น = เฉพาะ.pivot_table(index="ปี", columns="เกรด",
+                                values="ราคา", observed=False)
+        เส้น = เส้น.reindex(columns=[g for g in เกรดเรียง if g in เส้น.columns])
+        เส้น.index = เส้น.index.astype(str)
+        st.line_chart(เส้น)
+
+        st.info("เกรดยิ่งดี (AA สูงสุด) ราคายิ่งสูง — เจ้าของสวนใช้วางแผนคัดเกรด/ช่วงเก็บเกี่ยวได้")
