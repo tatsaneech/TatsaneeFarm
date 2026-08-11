@@ -1,4 +1,4 @@
-import os
+import datetime as dt
 import streamlit as st
 import pandas as pd
 import requests
@@ -66,18 +66,60 @@ def ดึงราคาเกษตร():
 
 # ---------- โมเดลแนะนำการรดน้ำ (Lab 5) ----------
 # ---------- ข้อมูลและโมเดลของแท็บแนะนำการรดน้ำ (Lab 5) ----------
-# lab05-water-1y.csv = อากาศจริงย้อนหลัง 1 ปีจาก Open-Meteo (พิกัด ม.แม่โจ้)
-# 365 แถว 6 features — ต้องอัปโหลดไฟล์นี้ขึ้น GitHub คู่กับ app.py ด้วย
+# แอปสร้างข้อมูลสอนโมเดลเองจาก Open-Meteo Archive (อากาศจริงย้อนหลัง 1 ปี)
+# จึงไม่ต้องอัปโหลดไฟล์ .csv ขึ้น GitHub — อัปแค่ app.py กับ requirements.txt
 คุณลักษณะ = ["moisture", "temp", "rain", "rain3", "humid", "et0"]
 
-@st.cache_resource          # เทรนครั้งเดียวแล้วเก็บไว้ ไม่เทรนใหม่ทุกครั้งที่ผู้ใช้ขยับสไลเดอร์
-def สร้างโมเดลรดน้ำ():
+
+def ติดป้ายรดน้ำ(moisture, rain, rain3, et0):
+    """กฎเกษตร: รดเมื่อดินแห้ง + ฝนไม่มาช่วย + พืชคายน้ำสูง
+    (ใช้สร้างคำตอบสำหรับสอนโมเดล เพราะไม่มีบันทึกการรดน้ำจริงของสวน)"""
+    if rain >= 10:        return 0        # ฝนพรุ่งนี้เยอะ ไม่ต้องรด
+    if moisture >= 30:    return 0        # ดินยังชื้นพอ
+    if moisture < 22:     return 1        # ดินแห้งมาก
+    return 1 if (et0 >= 3.5 or rain3 < 5) else 0
+
+
+@st.cache_data(ttl=86400)                 # ดึงวันละครั้งพอ
+def ดึงข้อมูลสอนรดน้ำ(lat, lon):
+    """อากาศจริงย้อนหลัง 1 ปีที่พิกัดสวน -> ตารางสอนโมเดล"""
+    วันจบ = dt.date.today() - dt.timedelta(days=6)      # archive ตามหลังจริงราว 5 วัน
+    วันเริ่ม = วันจบ - dt.timedelta(days=367)
+    resp = requests.get("https://archive-api.open-meteo.com/v1/archive", params={
+        "latitude": lat, "longitude": lon,
+        "start_date": วันเริ่ม.isoformat(), "end_date": วันจบ.isoformat(),
+        "daily": ("temperature_2m_max,precipitation_sum,relative_humidity_2m_mean,"
+                  "et0_fao_evapotranspiration,soil_moisture_0_to_7cm_mean"),
+        "timezone": "Asia/Bangkok"}, headers=HEADERS, timeout=60)
+    resp.raise_for_status()
+    d = resp.json()["daily"]
+
+    แถว = []
+    for i in range(2, len(d["time"]) - 1):
+        sm = d["soil_moisture_0_to_7cm_mean"][i]
+        t, h, e = d["temperature_2m_max"][i], d["relative_humidity_2m_mean"][i], \
+                  d["et0_fao_evapotranspiration"][i]
+        ฝนพรุ่งนี้ = d["precipitation_sum"][i + 1]
+        if None in (sm, t, h, e, ฝนพรุ่งนี้):
+            continue
+        ฝน3 = sum(x for x in d["precipitation_sum"][i - 2:i + 1] if x is not None)
+        แถว.append({"date": d["time"][i], "moisture": round(sm * 100, 1),
+                    "temp": round(t, 1), "rain": round(ฝนพรุ่งนี้, 1),
+                    "rain3": round(ฝน3, 1), "humid": round(h), "et0": round(e, 2)})
+    df = pd.DataFrame(แถว)
+    df["water"] = [ติดป้ายรดน้ำ(r.moisture, r.rain, r.rain3, r.et0)
+                   for r in df.itertuples()]
+    return df
+
+
+@st.cache_resource       # เทรนครั้งเดียวแล้วเก็บไว้ ไม่เทรนใหม่ทุกครั้งที่ขยับสไลเดอร์
+def สร้างโมเดลรดน้ำ(lat, lon):
     from sklearn.ensemble import RandomForestClassifier
-    d = pd.read_csv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "lab05-water-1y.csv"))
+    d = ดึงข้อมูลสอนรดน้ำ(lat, lon)
     m = RandomForestClassifier(n_estimators=200, random_state=42)
     m.fit(d[คุณลักษณะ], d["water"])
     return m, d
+
 
 @st.cache_data(ttl=1800)
 def ดึงค่าอากาศรดน้ำ(lat, lon):
@@ -89,9 +131,9 @@ def ดึงค่าอากาศรดน้ำ(lat, lon):
     resp = requests.get(url, headers=HEADERS, timeout=30)
     resp.raise_for_status()
     d = resp.json()["daily"]
-    return {"rain": float(d["precipitation_sum"][-1]),            # พรุ่งนี้
-            "rain3": float(sum(d["precipitation_sum"][-4:-1])),   # 3 วันจบวันนี้
-            "humid": float(d["relative_humidity_2m_mean"][-2]),   # วันนี้
+    return {"rain": float(d["precipitation_sum"][-1]),
+            "rain3": float(sum(d["precipitation_sum"][-4:-1])),
+            "humid": float(d["relative_humidity_2m_mean"][-2]),
             "et0": float(d["et0_fao_evapotranspiration"][-2])}
 
 แท็บอากาศ, แท็บน้ำ, แท็บราคา, แท็บรดน้ำ = st.tabs(
@@ -176,7 +218,12 @@ with แท็บรดน้ำ:
     st.caption("Random Forest เรียนจากอากาศจริงย้อนหลัง 1 ปี (365 วัน) ที่พิกัดสวน "
                "แล้วตอบว่าวันนี้ควรรดน้ำหรือไม่")
 
-    โมเดล, ตารางสอน = สร้างโมเดลรดน้ำ()
+    try:
+        โมเดล, ตารางสอน = สร้างโมเดลรดน้ำ(lat, lon)
+    except Exception as e:
+        st.error("ดึงข้อมูลอากาศย้อนหลังมาสอนโมเดลไม่สำเร็จ จึงยังแนะนำการรดน้ำไม่ได้ "
+                 f"ลองรีเฟรชหน้าอีกครั้ง (สาเหตุ: {e})")
+        st.stop()
 
     c1, c2 = st.columns(2)
     ความชื้นดิน = c1.slider("ความชื้นดิน (%)", 5, 50, 25,
