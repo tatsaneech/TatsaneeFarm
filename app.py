@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import requests
@@ -64,30 +65,34 @@ def ดึงราคาเกษตร():
         return None, False
 
 # ---------- โมเดลแนะนำการรดน้ำ (Lab 5) ----------
-# ข้อมูลชุดเดียวกับ course-labs/Lab05/lab05-water.csv (12 แถว)
-ข้อมูลรดน้ำ = """moisture,temp,rain,water
-25,33,0,1
-30,32,0,1
-60,28,10,0
-70,27,15,0
-20,35,0,1
-55,30,2,1
-65,29,12,0
-40,31,1,1
-75,26,20,0
-35,34,0,1
-50,30,8,0
-28,33,0,1
-"""
+# ---------- ข้อมูลและโมเดลของแท็บแนะนำการรดน้ำ (Lab 5) ----------
+# lab05-water-1y.csv = อากาศจริงย้อนหลัง 1 ปีจาก Open-Meteo (พิกัด ม.แม่โจ้)
+# 365 แถว 6 features — ต้องอัปโหลดไฟล์นี้ขึ้น GitHub คู่กับ app.py ด้วย
+คุณลักษณะ = ["moisture", "temp", "rain", "rain3", "humid", "et0"]
 
 @st.cache_resource          # เทรนครั้งเดียวแล้วเก็บไว้ ไม่เทรนใหม่ทุกครั้งที่ผู้ใช้ขยับสไลเดอร์
 def สร้างโมเดลรดน้ำ():
-    from io import StringIO
     from sklearn.ensemble import RandomForestClassifier
-    d = pd.read_csv(StringIO(ข้อมูลรดน้ำ))
-    m = RandomForestClassifier(n_estimators=100, random_state=42)
-    m.fit(d[["moisture", "temp", "rain"]], d["water"])
+    d = pd.read_csv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "lab05-water-1y.csv"))
+    m = RandomForestClassifier(n_estimators=200, random_state=42)
+    m.fit(d[คุณลักษณะ], d["water"])
     return m, d
+
+@st.cache_data(ttl=1800)
+def ดึงค่าอากาศรดน้ำ(lat, lon):
+    """คืนค่าอากาศจริงที่โมเดลต้องใช้: ฝนพรุ่งนี้, ฝนสะสม 3 วัน, ความชื้น, การคายระเหย"""
+    url = (f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+           f"&daily=precipitation_sum,relative_humidity_2m_mean,"
+           f"et0_fao_evapotranspiration&past_days=3&forecast_days=2"
+           f"&timezone=Asia/Bangkok")
+    resp = requests.get(url, headers=HEADERS, timeout=30)
+    resp.raise_for_status()
+    d = resp.json()["daily"]
+    return {"rain": float(d["precipitation_sum"][-1]),            # พรุ่งนี้
+            "rain3": float(sum(d["precipitation_sum"][-4:-1])),   # 3 วันจบวันนี้
+            "humid": float(d["relative_humidity_2m_mean"][-2]),   # วันนี้
+            "et0": float(d["et0_fao_evapotranspiration"][-2])}
 
 แท็บอากาศ, แท็บน้ำ, แท็บราคา, แท็บรดน้ำ = st.tabs(
     ["สภาพอากาศ", "ระดับน้ำแม่น้ำ", "ราคาสินค้าเกษตร", "แนะนำการรดน้ำ"])
@@ -168,27 +173,36 @@ with แท็บราคา:
 # ---------- แท็บ 4: แนะนำการรดน้ำ (โมเดล ML จาก Lab 5) ----------
 with แท็บรดน้ำ:
     st.subheader("ระบบแนะนำการรดน้ำ (Machine Learning)")
-    st.caption("โมเดล Random Forest เรียนจากข้อมูลเซนเซอร์ 12 แถว แล้วตอบว่าวันนี้ควรรดน้ำหรือไม่")
+    st.caption("Random Forest เรียนจากอากาศจริงย้อนหลัง 1 ปี (365 วัน) ที่พิกัดสวน "
+               "แล้วตอบว่าวันนี้ควรรดน้ำหรือไม่")
 
     โมเดล, ตารางสอน = สร้างโมเดลรดน้ำ()
 
     c1, c2 = st.columns(2)
-    ความชื้นดิน = c1.slider("ความชื้นดิน (%)", 0, 100, 40)
-    อุณหภูมิ = c2.slider("อุณหภูมิ (°C)", 15, 40, 30)
+    ความชื้นดิน = c1.slider("ความชื้นดิน (%)", 5, 50, 25,
+                            help="วัดจากเซนเซอร์ในแปลง (ปริมาตรน้ำในดิน)")
+    อุณหภูมิ = c2.slider("อุณหภูมิสูงสุดวันนี้ (°C)", 20, 40, 32)
 
-    ใช้ฝนจริง = st.checkbox("ดึงฝนพยากรณ์จริงมาใช้ (จากพิกัดในแท็บสภาพอากาศ)", value=True)
-    if ใช้ฝนจริง:
+    ใช้ค่าจริง = st.checkbox("ดึงค่าอากาศที่เหลือจาก API จริง (ตามพิกัดในแท็บสภาพอากาศ)",
+                             value=True)
+    if ใช้ค่าจริง:
         try:
-            ฝน = float(ดึงอากาศ(lat, lon, 3)["ฝน"].iloc[:2].sum())
-            st.caption(f"ฝนพยากรณ์ 2 วันข้างหน้าที่พิกัด {lat}, {lon} = {ฝน:.1f} มม.")
+            อ = ดึงค่าอากาศรดน้ำ(lat, lon)
+            st.caption(f"พิกัด {lat}, {lon} — ฝนพรุ่งนี้ {อ['rain']:.1f} มม. · "
+                       f"ฝน 3 วันที่ผ่านมา {อ['rain3']:.1f} มม. · "
+                       f"ความชื้นอากาศ {อ['humid']:.0f}% · การคายระเหย {อ['et0']:.2f} มม.")
         except Exception:
-            ฝน = 0.0
-            st.caption("ดึงพยากรณ์ไม่สำเร็จ ใช้ค่า 0 มม. แทน")
+            อ = {"rain": 0.0, "rain3": 0.0, "humid": 70.0, "et0": 3.5}
+            st.caption("ดึง API ไม่สำเร็จ ใช้ค่าตั้งต้นแทน")
     else:
-        ฝน = float(st.slider("ฝนพยากรณ์ (มม.)", 0, 50, 0))
+        d1, d2 = st.columns(2)
+        อ = {"rain": float(d1.slider("ฝนพยากรณ์พรุ่งนี้ (มม.)", 0, 60, 0)),
+             "rain3": float(d2.slider("ฝนสะสม 3 วันที่ผ่านมา (มม.)", 0, 100, 0)),
+             "humid": float(d1.slider("ความชื้นอากาศ (%)", 30, 100, 70)),
+             "et0": float(d2.slider("การคายระเหย et0 (มม./วัน)", 1.0, 6.0, 3.5, 0.1))}
 
-    x = pd.DataFrame([[ความชื้นดิน, อุณหภูมิ, ฝน]],
-                     columns=["moisture", "temp", "rain"])
+    x = pd.DataFrame([[ความชื้นดิน, อุณหภูมิ, อ["rain"], อ["rain3"],
+                       อ["humid"], อ["et0"]]], columns=คุณลักษณะ)
     ผล = int(โมเดล.predict(x)[0])
     ความมั่นใจ = float(โมเดล.predict_proba(x)[0][ผล])
 
@@ -197,7 +211,13 @@ with แท็บรดน้ำ:
     else:
         st.info(f"### ไม่ต้องรดน้ำ\nดินชื้นพอหรือฝนกำลังจะตก — ความมั่นใจ {ความมั่นใจ:.0%}")
 
-    with st.expander("ดูข้อมูลที่ใช้สอนโมเดล (12 แถว)"):
-        st.dataframe(ตารางสอน, hide_index=True)
-        st.caption("water: 1 = ควรรดน้ำ, 0 = ไม่ต้องรด — "
-                   "ข้อมูลชุดเดียวกับ course-labs/Lab05/lab05-water.csv")
+    with st.expander("ปัจจัยที่โมเดลให้น้ำหนักมากที่สุด"):
+        น้ำหนัก = pd.Series(โมเดล.feature_importances_, index=คุณลักษณะ)
+        น้ำหนัก = น้ำหนัก.sort_values(ascending=False)
+        st.bar_chart(น้ำหนัก)
+        st.caption("ความชื้นดินมีน้ำหนักมากที่สุด ตรงกับสามัญสำนึกของชาวสวน")
+
+    with st.expander(f"ดูข้อมูลที่ใช้สอนโมเดล ({len(ตารางสอน)} วัน)"):
+        st.dataframe(ตารางสอน.tail(30), hide_index=True)
+        st.caption("อากาศจริงจาก Open-Meteo · คอลัมน์ water: 1 = ควรรดน้ำ, 0 = ไม่ต้องรด "
+                   "(ป้ายคำตอบมาจากกฎเกษตร ไม่ใช่บันทึกการรดน้ำจริง)")
